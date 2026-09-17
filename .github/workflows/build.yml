@@ -8,9 +8,8 @@ on:
         default: vendor/umi_user_defconfig
       localversion:
         description: >-
-          vermagic 后缀，必须与目标 ROM 的原厂内核一致。
-          MIUI11 V11.0.7.0=-perf-gaea596d ｜ V11.0.25.0=-perf-g453ac5d ｜
-          MIUI12 V12.0.11.0=-perf-gb895fc2
+          vermagic 版本后缀。MIUI11 V11.0.7.0=-perf-gaea596d ｜
+          V11.0.25.0=-perf-g453ac5d ｜ MIUI12 V12.0.11.0=-perf-gb895fc2
         required: true
         default: "-perf-gaea596d"
       clang_repo:
@@ -23,7 +22,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
-      # 关键：设成空值可抑制 setlocalversion 追加的 "+" 后缀
+      # 空值可抑制 setlocalversion 追加的 "+" 后缀
       LOCALVERSION: ""
     steps:
       - uses: actions/checkout@v4
@@ -43,30 +42,19 @@ jobs:
           echo "$HOME/tc/bin" >> "$GITHUB_PATH"
           "$HOME/tc/bin/clang" --version
 
-      # ── 修复 ①：dtc 的 yylloc 重复定义 ────────────────────────────────
+      # 修复 ①：dtc 的 yylloc 重复定义（GCC 10+ 默认 -fno-common）
       - name: Fix dtc yylloc for -fno-common
         run: |
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l
           grep -n "YYLTYPE yylloc" scripts/dtc/dtc-lexer.l
 
-      # ── 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR ─────────────────────
-      # (a) 必须显式给 CROSS_COMPILE：4.19.81 的 Makefile:489-491 里
-      #     --target= 只在 CROSS_COMPILE 非空时才加，否则 clang 按宿主
-      #     x86_64 编译，报 register 'sp' unsuitable / constraint 'I'。
-      # (b) 必须覆盖 GCC_TOOLCHAIN_DIR：Makefile:495 算的是
-      #     $(dir $(which $(CROSS_COMPILE)elfedit)) → /usr/bin/，
-      #     于是 clang 去找 /usr/bin/as；x86 runner 上那是 x86 汇编器，
-      #     不认 -EL。覆盖成 aarch64- 前缀后正确找到 aarch64 GNU as。
-      #
-      # ── 修复 ③：vermagic 必须与原厂一致 ───────────────────────────────
-      # 原厂 MIUI11/12 (Android 10) 内核：
-      #   4.19.81-perf-gaea596d SMP preempt mod_unload modversions aarch64
-      # 因此需要：
-      #   CONFIG_LOCALVERSION="<localversion>"   （= -perf-<hash>）
-      #   CONFIG_LOCALVERSION_AUTO=n             （不追加 git hash）
-      #   LOCALVERSION= 环境变量空值             （不追加 "+"）
-      #   CONFIG_MODVERSIONS=y                   （vendor 模块带 modversions）
-      # 原厂内核确实含 __kcrctab，MODVERSIONS 是必需的。
+      # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
+      #          且 --prefix 会指向 x86 汇编器）
+      # 修复 ③：vermagic 必须与原厂一致：
+      #          4.19.81-perf-<hash> SMP preempt mod_unload modversions aarch64
+      #          → LOCALVERSION_AUTO=n、LOCALVERSION 空值、MODVERSIONS=y
+      #          （MODVERSIONS 必须在，否则 vermagic 少 "modversions"，
+      #           模块带 __versions 时 same_magic 会逐字比较而拒绝加载）
       - name: Configure
         run: |
           set -e
@@ -84,22 +72,18 @@ jobs:
           make O=out $COMMON include/config/kernel.release
           cat out/include/config/kernel.release
 
-      # ── 修复 ④：用 GNU ld 替代 ld.lld ────────────────────────────────
-      # MODVERSIONS 会为导出符号生成 __crc_xxx，用 32 位绝对重定位；
-      # ld.lld 拒绝：relocation R_AARCH64_ABS32 cannot be used against
-      # symbol __crc_gsi_write_channel_scratch; recompile with -fPIC
-      # GNU ld 正常支持。MiCode 为 CONFIG_LTO_NONE=y，无 LTO 依赖，
-      # 所以可以安全换用 GNU ld（LTO 才必须用 lld）。
+      # 用 ld.lld：GNU ld 在链接该内核时另报
+      #   relocation truncated to fit: R_AARCH64_ADR_PREL_PG_HI21 ...
       - name: Build
         run: |
           make O=out ARCH=arm64 \
             CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
             GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
-            LD=aarch64-linux-gnu-ld AR=llvm-ar NM=llvm-nm \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             -j"$(nproc)" Image
           ls -lh out/arch/arm64/boot/Image
-          echo "==== 产物内嵌的 vermagic ===="
+          echo "==== 产物内嵌 vermagic ===="
           grep -aoE '4\.19\.[0-9]+[^\x00]{0,25} SMP preempt[^\x00]{0,40}' \
             out/arch/arm64/boot/Image | head -3 || true
 
