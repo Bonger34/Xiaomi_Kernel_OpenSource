@@ -68,6 +68,16 @@ jobs:
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l
           grep -n "YYLTYPE yylloc" scripts/dtc/dtc-lexer.l
 
+      # 修复 ②b：可复现构建——gen_kheaders.sh 的 tar 会记录源文件 mtime
+      #          （= CI checkout 时间），使 kheaders_data.tar.xz 压缩后长度每次
+      #          不同（实测差 1128 字节），把其后约 10MB 内容整体顶偏。
+      #          注：SOURCE_DATE_EPOCH 对 GNU tar 无效，必须用 --mtime。
+      - name: Fix kheaders tar mtime (reproducible build)
+        run: |
+          sed -i 's|^tar -Jcf \$tarfile|tar --mtime=@0 --owner=0 --group=0 --numeric-owner -Jcf $tarfile|' \
+            kernel/gen_kheaders.sh
+          grep -n "Jcf" kernel/gen_kheaders.sh
+
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
       #          且 --prefix 会指向 x86 汇编器）
       # 修复 ③：vermagic 必须与原厂一致：
