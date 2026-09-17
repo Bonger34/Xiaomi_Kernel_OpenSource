@@ -93,4 +93,6 @@ jobs:
           path: |
             out/arch/arm64/boot/Image
             out/.config
+          # upload-artifact v4 默认排除隐藏文件，需显式开启才能带上 .config
+          include-hidden-files: true
           if-no-files-found: error
