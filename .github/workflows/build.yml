@@ -1,0 +1,58 @@
+name: Build Kernel (KernelSU)
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: base defconfig
+        required: true
+        default: vendor/umi_user_defconfig
+      clang_repo:
+        description: clang prebuilt repo
+        required: false
+        default: LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
+            python3 python-is-python3 rsync zip unzip cpio lz4 xz-utils git curl build-essential
+
+      - name: Fetch clang toolchain
+        run: |
+          git clone --depth 1 "https://github.com/${{ inputs.clang_repo }}" "$HOME/tc"
+          echo "$HOME/tc/bin" >> "$GITHUB_PATH"
+          "$HOME/tc/bin/clang" --version
+
+      - name: Configure
+        run: |
+          set -e
+          # This Makefile sets CC to scripts/gcc-wrapper.py (python2 syntax),
+          # so CC is overridden on the command line to bypass the wrapper.
+          make O=out ARCH=arm64 CC=clang ${{ inputs.defconfig }}
+          make O=out ARCH=arm64 CC=clang olddefconfig
+          echo "==== key config ===="
+          grep -E "^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|HAVE_KPROBES)=" out/.config || true
+
+      - name: Build
+        run: |
+          make O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
+            -j"$(nproc)" Image
+          ls -lh out/arch/arm64/boot/Image
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: |
+            out/arch/arm64/boot/Image
+            out/.config
+          if-no-files-found: error
