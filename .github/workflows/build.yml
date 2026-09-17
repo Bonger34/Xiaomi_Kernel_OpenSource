@@ -1,4 +1,4 @@
-name: Build Kernel (KernelSU)
+name: Build Kernel (KernelSU) - Android 10 (reproducible)
 on:
   workflow_dispatch:
     inputs:
@@ -8,10 +8,37 @@ on:
         default: vendor/umi_user_defconfig
       localversion:
         description: >-
-          vermagic 版本后缀。MIUI11 V11.0.7.0=-perf-gaea596d ｜
-          V11.0.25.0=-perf-g453ac5d ｜ MIUI12 V12.0.11.0=-perf-gb895fc2
-        required: true
+            vermagic 版本后缀。Android 10 各版本不同，例如
+              V11.0.7.0=-perf-gaea596d ｜ V12.0.11.0=-perf-gb895fc2
         default: "-perf-gaea596d"
+      # 以下三项让 uname -v 与原厂一字不差（mkcompile_h 原样拼接，不经 date 解析）。
+      # 每个固件版本的原厂值都不同，需逐版本填：
+      #   V11.0.5.0 : Thu Jan 16 03:38:46 CST 2020 / builder@c5-miui-ota-bd071.bj
+      #   V11.0.7.0 : Mon Feb 10 19:22:45 CST 2020 / builder@c5-miui-ota-bd071.bj
+      #   V11.0.9.0 : Fri Feb 21 00:53:49 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.10.0: Wed Feb 26 00:59:11 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.15.0: Mon Mar  2 06:39:12 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.17.0: Sat Mar  7 04:12:17 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.20.0: Thu Mar 26 02:12:31 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.24.0: Tue Apr 21 01:29:41 CST 2020 / builder@c5-miui-ota-bd074.bj
+      #   V11.0.25.0: Tue May 19 03:00:27 CST 2020 / builder@c5-miui-ota-bd071.bj
+      #   V12.0.1.0 : Fri Jun  5 01:55:06 CST 2020 / builder@c5-miui-ota-bd073.bj
+      #   V12.0.4.0 : Wed Jul  1 05:40:56 CST 2020 / builder@c5-miui-ota-bd072.bj
+      #   V12.0.7.0 : Tue Jul 21 04:33:11 CST 2020 / builder@c5-miui-ota-bd073.bj
+      #   V12.0.8.0 : Thu Aug  6 04:10:30 CST 2020 / builder@c5-miui-ota-bd072.bj
+      #   V12.0.11.0: Tue Oct 20 00:25:49 CST 2020 / builder@c5-miui-ota-bd072.bj
+      build_timestamp:
+        description: KBUILD_BUILD_TIMESTAMP（原样拼入 UTS_VERSION）
+        required: true
+        default: "Mon Feb 10 19:22:45 CST 2020"
+      build_user:
+        description: KBUILD_BUILD_USER
+        required: true
+        default: builder
+      build_host:
+        description: KBUILD_BUILD_HOST
+        required: true
+        default: c5-miui-ota-bd071.bj
       clang_repo:
         description: clang prebuilt repo
         required: false
@@ -24,6 +51,10 @@ jobs:
     env:
       # 空值可抑制 setlocalversion 追加的 "+" 后缀
       LOCALVERSION: ""
+      # 让 UTS_VERSION / builder 与原厂一致
+      KBUILD_BUILD_TIMESTAMP: ${{ inputs.build_timestamp }}
+      KBUILD_BUILD_USER: ${{ inputs.build_user }}
+      KBUILD_BUILD_HOST: ${{ inputs.build_host }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +78,24 @@ jobs:
         run: |
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l
           grep -n "YYLTYPE yylloc" scripts/dtc/dtc-lexer.l
+
+      # 修复 ②b：可复现构建——gen_kheaders.sh 的 tar 会记录源文件 mtime
+      #          （= CI checkout 时间），使 kheaders_data.tar.xz 压缩后长度每次
+      #          不同（实测差 1128 字节），把其后约 10MB 内容整体顶偏。
+      #          注：SOURCE_DATE_EPOCH 对 GNU tar 无效，必须用 --mtime。
+      - name: Fix kheaders tar mtime (reproducible build)
+        run: |
+          sed -i 's|^tar -Jcf \$tarfile|tar --mtime=@0 --owner=0 --group=0 --numeric-owner -Jcf $tarfile|' \
+            kernel/gen_kheaders.sh
+          grep -n "Jcf" kernel/gen_kheaders.sh
+
+      # 修复 ②c：可复现构建——ld.lld 的 --build-id 默认样式含随机成分
+      #          （实测：kheaders 修好后其余字节全同，唯独 build-id 每次不同），
+      #          改为 --build-id=none 以彻底确定化。
+      - name: Disable nondeterministic build-id
+        run: |
+          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=none|' Makefile
+          grep -n "LDFLAGS_BUILD_ID" Makefile
 
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
       #          且 --prefix 会指向 x86 汇编器）
@@ -86,6 +135,9 @@ jobs:
           echo "==== 产物内嵌 vermagic ===="
           grep -aoE '4\.19\.[0-9]+[^\x00]{0,25} SMP preempt[^\x00]{0,40}' \
             out/arch/arm64/boot/Image | head -3 || true
+          echo "==== 完整版本串（应与原厂一致）===="
+          grep -aoE 'Linux version 4\.19\.[0-9]+[^\x00]{0,140}' \
+            out/arch/arm64/boot/Image | head -1 || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,4 +145,6 @@ jobs:
           path: |
             out/arch/arm64/boot/Image
             out/.config
+          # upload-artifact v4 默认排除隐藏文件，需显式开启才能带上 .config
+          include-hidden-files: true
           if-no-files-found: error
