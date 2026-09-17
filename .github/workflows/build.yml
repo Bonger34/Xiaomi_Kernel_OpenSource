@@ -78,6 +78,14 @@ jobs:
             kernel/gen_kheaders.sh
           grep -n "Jcf" kernel/gen_kheaders.sh
 
+      # 修复 ②c：可复现构建——ld.lld 的 --build-id 默认样式含随机成分
+      #          （实测：kheaders 修好后其余字节全同，唯独 build-id 每次不同），
+      #          改为 --build-id=none 以彻底确定化。
+      - name: Disable nondeterministic build-id
+        run: |
+          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=none|' Makefile
+          grep -n "LDFLAGS_BUILD_ID" Makefile
+
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
       #          且 --prefix 会指向 x86 汇编器）
       # 修复 ③：vermagic 必须与原厂一致：
