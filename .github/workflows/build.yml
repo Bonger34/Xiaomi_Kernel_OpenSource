@@ -39,6 +39,13 @@ on:
         description: KBUILD_BUILD_HOST
         required: true
         default: c5-miui-ota-bd071.bj
+      cpio_mtime_offset:
+        description: >-
+            initramfs cpio mtime 相对 uname 时间戳的偏移秒数。
+            原厂未设 KBUILD_BUILD_TIMESTAMP，故 cpio 的 time(NULL) 比
+            mkcompile_h 的 date 晚 1~2 秒（逐版本实测不同）。
+        required: false
+        default: "0"
       clang_repo:
         description: clang prebuilt repo
         required: false
@@ -100,6 +107,25 @@ jobs:
         run: |
           sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=sha1|' Makefile
           grep -n "LDFLAGS_BUILD_ID" Makefile
+
+      # 修复 ②d：initramfs cpio 的 mtime 偏移
+      #          usr/gen_initramfs_list.sh 用 date -d"$KBUILD_BUILD_TIMESTAMP" +%s
+      #          得到与 uname 相同的时间戳，但原厂未设该变量、cpio 用 time(NULL)，
+      #          比 mkcompile_h 的 date 晚 1~2 秒（逐版本实测不同）。加偏移精确匹配。
+      - name: Fix initramfs cpio mtime offset
+        run: |
+          python3 - << 'PYEOF'
+          off = "${{ inputs.cpio_mtime_offset }}"
+          p = 'usr/gen_initramfs_list.sh'
+          s = open(p, encoding='utf-8').read()
+          old = 'timestamp="$(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || :)"'
+          new = ('timestamp="$(($(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || echo 0)'
+                 ' + ' + off + '))"')
+          assert s.count(old) == 1, ('匹配数', s.count(old))
+          open(p, 'w', encoding='utf-8').write(s.replace(old, new))
+          print('  已加偏移 ' + off + ' 秒')
+          PYEOF
+          grep -n "timestamp=" usr/gen_initramfs_list.sh
 
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
       #          且 --prefix 会指向 x86 汇编器）
