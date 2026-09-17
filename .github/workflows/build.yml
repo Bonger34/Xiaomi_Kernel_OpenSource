@@ -51,6 +51,10 @@ jobs:
     env:
       # 空值可抑制 setlocalversion 追加的 "+" 后缀
       LOCALVERSION: ""
+      # 关键：CI 默认 TZ=UTC，GNU date 会把 "CST" 当成美国中部时间(-06:00)，
+      # 导致 initramfs cpio 的 mtime 差 14 小时。设为上海时区后 CST=+08:00，
+      # 与小米构建机一致。（不影响 KBUILD_BUILD_TIMESTAMP 原样拼入 UTS_VERSION）
+      TZ: Asia/Shanghai
       # 让 UTS_VERSION / builder 与原厂一致
       KBUILD_BUILD_TIMESTAMP: ${{ inputs.build_timestamp }}
       KBUILD_BUILD_USER: ${{ inputs.build_user }}
@@ -89,12 +93,12 @@ jobs:
             kernel/gen_kheaders.sh
           grep -n "Jcf" kernel/gen_kheaders.sh
 
-      # 修复 ②c：可复现构建——ld.lld 的 --build-id 默认样式含随机成分
-      #          （实测：kheaders 修好后其余字节全同，唯独 build-id 每次不同），
-      #          改为 --build-id=none 以彻底确定化。
-      - name: Disable nondeterministic build-id
+      # 修复 ②c：ld.lld 的 --build-id 默认样式含随机成分（实测两次构建不同），
+      #          改为 --build-id=sha1：既确定化（基于内容），又匹配原厂的
+      #          20 字节 sha1 格式（原厂 build-id 为 20 字节）。
+      - name: Deterministic build-id (sha1, match stock)
         run: |
-          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=none|' Makefile
+          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=sha1|' Makefile
           grep -n "LDFLAGS_BUILD_ID" Makefile
 
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
