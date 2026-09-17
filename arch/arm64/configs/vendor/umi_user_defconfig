@@ -772,3 +772,12 @@ CONFIG_XLOGCHAR=y
 # CONFIG_FW_CACHE is not set
 CONFIG_BLK_WBT=y
 CONFIG_BLK_WBT_SQ=y
+
+# KernelSU — kprobe 自动集成
+# 依据 https://kernelsu.org/zh_CN/guide/how-to-integrate-for-non-gki.html 方法一
+CONFIG_KSU=y
+
+# KernelSU kprobe 集成所需的配置
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y

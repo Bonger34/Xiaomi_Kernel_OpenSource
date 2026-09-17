@@ -2741,6 +2741,20 @@ int gsi_write_channel_scratch(unsigned long chan_hdl,
 
 	return GSI_STATUS_SUCCESS;
 }
+/*
+ * genksyms 在本文件中解析状态异常，无法为 gsi_write_channel_scratch
+ * 生成 CRC（其参数 union gsi_channel_scratch 是按值传递的大型 packed
+ * union，需要展开类型），结果 __crc_gsi_write_channel_scratch 只剩
+ * 未定义弱符号，vmlinux 链接失败：
+ *   relocation R_AARCH64_ABS32 against `__crc_gsi_write_channel_scratch'
+ *   can not be used when making a shared object
+ * 这里显式定义为绝对 0：既保证符号有定义使链接通过，又与原生内核
+ * 行为一致（原厂内核同样缺此 CRC，__kcrctab 槽位为 0；modpost 在模块侧
+ * 找不到 CRC 时不会写入 __versions 条目，故运行时不作版本校验）。
+ * 附带效果：该 asm 语句会让 genksyms 重新同步解析状态。
+ */
+__asm__(".weak __crc_gsi_write_channel_scratch\n"
+	".set __crc_gsi_write_channel_scratch, 0\n");
 EXPORT_SYMBOL(gsi_write_channel_scratch);
 
 int gsi_read_channel_scratch(unsigned long chan_hdl,
