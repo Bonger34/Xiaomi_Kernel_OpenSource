@@ -1633,6 +1633,9 @@ static inline bool may_mandlock(void)
 #ifndef	CONFIG_MANDATORY_FILE_LOCKING
 	return false;
 #endif
+	return capable(CAP_SYS_ADMIN);
+}
+
 static int can_umount(const struct path *path, int flags)
 {
 	struct mount *mnt = real_mount(path->mnt);
@@ -1668,8 +1671,6 @@ int path_umount(struct path *path, int flags)
 }
 EXPORT_SYMBOL_GPL(path_umount);
 
-	return capable(CAP_SYS_ADMIN);
-}
 
 /*
  * Now umount can handle mount points as well as block devices.
