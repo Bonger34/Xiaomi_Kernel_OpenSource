@@ -70,6 +70,18 @@ jobs:
             CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
             GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
             olddefconfig
+
+          # ── 修复 ③：关掉 MODVERSIONS ─────────────────────────────────
+          # MODVERSIONS 会为导出符号生成 __crc_xxx，用 32 位绝对重定位，
+          # 而 ld.lld 拒绝这类重定位（GNU ld 才容忍）：
+          #   ld.lld: error: relocation R_AARCH64_ABS32 cannot be used against
+          #   symbol __crc_gsi_write_channel_scratch; recompile with -fPIC
+          # 内核模块都是内建的，关掉不影响功能。
+          scripts/config --file out/.config -d MODVERSIONS
+          make O=out ARCH=arm64 \
+            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
+            GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
+            olddefconfig
           echo "==== key config ===="
           grep -E "^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|HAVE_KPROBES)=" out/.config || true
 
