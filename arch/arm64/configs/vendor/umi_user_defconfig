@@ -735,3 +735,12 @@ CONFIG_HAS_IOMEM=y
 CONFIG_RC_DEVICES=y
 CONFIG_HWCONF_MANAGER=y
 CONFIG_XLOGCHAR=y
+
+# KernelSU — kprobe 自动集成
+# 依据 https://kernelsu.org/zh_CN/guide/how-to-integrate-for-non-gki.html 方法一
+CONFIG_KSU=y
+
+# KernelSU kprobe 集成所需的配置
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
