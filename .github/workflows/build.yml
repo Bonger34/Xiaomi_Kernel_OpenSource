@@ -139,6 +139,11 @@ jobs:
           set -e
           COMMON="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr"
           make O=out $COMMON ${{ inputs.defconfig }}
+          # 补齐与原厂生产 config 的差异（MTD / netfilter action 等）
+          if [ -f arch/arm64/configs/vendor/umi_stock_supplement.config ]; then
+            cat arch/arm64/configs/vendor/umi_stock_supplement.config >> out/.config
+            echo "==== 已拼接 supplement（$(wc -l < arch/arm64/configs/vendor/umi_stock_supplement.config) 行）===="
+          fi
           make O=out $COMMON olddefconfig
           scripts/config --file out/.config \
             --set-str LOCALVERSION "${{ inputs.localversion }}" \
