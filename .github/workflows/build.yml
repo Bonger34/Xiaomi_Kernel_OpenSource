@@ -6,6 +6,13 @@ on:
         description: base defconfig
         required: true
         default: vendor/umi_user_defconfig
+      localversion:
+        description: >-
+          vermagic 后缀，必须与目标 ROM 的原厂内核一致。
+          MIUI11 V11.0.7.0=-perf-gaea596d ｜ V11.0.25.0=-perf-g453ac5d ｜
+          MIUI12 V12.0.11.0=-perf-gb895fc2
+        required: true
+        default: "-perf-gaea596d"
       clang_repo:
         description: clang prebuilt repo
         required: false
@@ -15,12 +22,14 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    env:
+      # 关键：设成空值可抑制 setlocalversion 追加的 "+" 后缀
+      LOCALVERSION: ""
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # gcc-aarch64-linux-gnu 是必须的：clang 要用它的 as/elfedit 作外部汇编器
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -35,8 +44,6 @@ jobs:
           "$HOME/tc/bin/clang" --version
 
       # ── 修复 ①：dtc 的 yylloc 重复定义 ────────────────────────────────
-      # GCC 10+ 默认 -fno-common，dtc-lexer.l 的 "YYLTYPE yylloc;" 与
-      # dtc-parser.tab.o 里的定义冲突 → ld 报 multiple definition。
       - name: Fix dtc yylloc for -fno-common
         run: |
           sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l
@@ -45,55 +52,56 @@ jobs:
       # ── 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR ─────────────────────
       # (a) 必须显式给 CROSS_COMPILE：4.19.81 的 Makefile:489-491 里
       #     --target= 只在 CROSS_COMPILE 非空时才加，否则 clang 按宿主
-      #     x86_64 编译，报：
-      #       stack_pointer.h:8: error: register 'sp' unsuitable ...
-      #       kgdb.h:32: error: value '1025' out of range for constraint 'I'
-      #
+      #     x86_64 编译，报 register 'sp' unsuitable / constraint 'I'。
       # (b) 必须覆盖 GCC_TOOLCHAIN_DIR：Makefile:495 算的是
-      #       $(dir $(which $(CROSS_COMPILE)elfedit))  →  /usr/bin/
-      #     于是 --prefix=/usr/bin/，clang 去找 /usr/bin/as。
-      #     本地（aarch64 主机）那是 aarch64 汇编器所以能过，
-      #     但 x86 runner 上是 x86 汇编器，不认 -EL：
-      #       /usr/bin/as: unrecognized option '-EL'
-      #     覆盖成 /usr/bin/aarch64-linux-gnu- 后，clang 正确找到
-      #     /usr/bin/aarch64-linux-gnu-as（实测接受 -EL）。
+      #     $(dir $(which $(CROSS_COMPILE)elfedit)) → /usr/bin/，
+      #     于是 clang 去找 /usr/bin/as；x86 runner 上那是 x86 汇编器，
+      #     不认 -EL。覆盖成 aarch64- 前缀后正确找到 aarch64 GNU as。
+      #
+      # ── 修复 ③：vermagic 必须与原厂一致 ───────────────────────────────
+      # 原厂 MIUI11/12 (Android 10) 内核：
+      #   4.19.81-perf-gaea596d SMP preempt mod_unload modversions aarch64
+      # 因此需要：
+      #   CONFIG_LOCALVERSION="<localversion>"   （= -perf-<hash>）
+      #   CONFIG_LOCALVERSION_AUTO=n             （不追加 git hash）
+      #   LOCALVERSION= 环境变量空值             （不追加 "+"）
+      #   CONFIG_MODVERSIONS=y                   （vendor 模块带 modversions）
+      # 原厂内核确实含 __kcrctab，MODVERSIONS 是必需的。
       - name: Configure
         run: |
           set -e
-          # 该 Makefile 把 CC 设为 scripts/gcc-wrapper.py（python2 语法），
-          # 所以命令行覆盖 CC 以绕过 wrapper。
-          make O=out ARCH=arm64 \
-            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
-            GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
-            ${{ inputs.defconfig }}
-          make O=out ARCH=arm64 \
-            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
-            GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
-            olddefconfig
-
-          # ── 修复 ③：关掉 MODVERSIONS ─────────────────────────────────
-          # MODVERSIONS 会为导出符号生成 __crc_xxx，用 32 位绝对重定位，
-          # 而 ld.lld 拒绝这类重定位（GNU ld 才容忍）：
-          #   ld.lld: error: relocation R_AARCH64_ABS32 cannot be used against
-          #   symbol __crc_gsi_write_channel_scratch; recompile with -fPIC
-          # 内核模块都是内建的，关掉不影响功能。
-          scripts/config --file out/.config -d MODVERSIONS
-          make O=out ARCH=arm64 \
-            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
-            GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
-            olddefconfig
+          COMMON="ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr"
+          make O=out $COMMON ${{ inputs.defconfig }}
+          make O=out $COMMON olddefconfig
+          scripts/config --file out/.config \
+            --set-str LOCALVERSION "${{ inputs.localversion }}" \
+            --disable LOCALVERSION_AUTO \
+            --enable MODVERSIONS
+          make O=out $COMMON olddefconfig
           echo "==== key config ===="
-          grep -E "^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|HAVE_KPROBES)=" out/.config || true
+          grep -E "^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|HAVE_KPROBES|MODVERSIONS|LOCALVERSION)=" out/.config || true
+          echo "==== UTS_RELEASE (vermagic 前缀) ===="
+          make O=out $COMMON include/config/kernel.release
+          cat out/include/config/kernel.release
 
+      # ── 修复 ④：用 GNU ld 替代 ld.lld ────────────────────────────────
+      # MODVERSIONS 会为导出符号生成 __crc_xxx，用 32 位绝对重定位；
+      # ld.lld 拒绝：relocation R_AARCH64_ABS32 cannot be used against
+      # symbol __crc_gsi_write_channel_scratch; recompile with -fPIC
+      # GNU ld 正常支持。MiCode 为 CONFIG_LTO_NONE=y，无 LTO 依赖，
+      # 所以可以安全换用 GNU ld（LTO 才必须用 lld）。
       - name: Build
         run: |
           make O=out ARCH=arm64 \
             CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
             GCC_TOOLCHAIN_DIR=/usr/bin/aarch64-linux-gnu- GCC_TOOLCHAIN=/usr \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            LD=aarch64-linux-gnu-ld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             -j"$(nproc)" Image
           ls -lh out/arch/arm64/boot/Image
+          echo "==== 产物内嵌的 vermagic ===="
+          grep -aoE '4\.19\.[0-9]+[^\x00]{0,25} SMP preempt[^\x00]{0,40}' \
+            out/arch/arm64/boot/Image | head -3 || true
 
       - uses: actions/upload-artifact@v4
         with:
