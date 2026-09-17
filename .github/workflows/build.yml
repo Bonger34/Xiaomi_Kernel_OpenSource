@@ -20,11 +20,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      # 多装了 gcc-aarch64-linux-gnu：clang 需要一个 GCC toolchain 作 --prefix 目标
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
-            python3 python-is-python3 rsync zip unzip cpio lz4 xz-utils git curl build-essential
+            python3 python-is-python3 rsync zip unzip cpio lz4 xz-utils git curl build-essential \
+            gcc-aarch64-linux-gnu
 
       - name: Fetch clang toolchain
         run: |
@@ -32,19 +34,45 @@ jobs:
           echo "$HOME/tc/bin" >> "$GITHUB_PATH"
           "$HOME/tc/bin/clang" --version
 
+      # ── 修复 ①：dtc 的 yylloc 重复定义 ────────────────────────────────
+      # GCC 10+ 默认 -fno-common，dtc-lexer.l 里的 "YYLTYPE yylloc;" 变成
+      # 重复定义（dtc-parser.tab.o 里也有一份）→ ld 报 multiple definition。
+      # 4.19.81 太老没带这个修复，需要自己打。
+      - name: Fix dtc yylloc for -fno-common
+        run: |
+          grep -n "YYLTYPE yylloc" scripts/dtc/dtc-lexer.l
+          sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' scripts/dtc/dtc-lexer.l
+          grep -n "YYLTYPE yylloc" scripts/dtc/dtc-lexer.l
+
+      # ── 修复 ②：必须显式给 CROSS_COMPILE ──────────────────────────────
+      # 原版只传了 CC=clang，没传 CROSS_COMPILE。4.19.81 的 Makefile 里
+      # --target= 只在 CROSS_COMPILE 非空时才加（Makefile:489-491），
+      # 于是 clang 按宿主 x86_64 编译，报：
+      #   arch/arm64/include/asm/stack_pointer.h:8:51:
+      #     error: register 'sp' unsuitable for global register variables
+      #   arch/arm64/include/asm/kgdb.h:32:25:
+      #     error: value '1025' out of range for constraint 'I'
+      # 加上 CROSS_COMPILE + CLANG_TRIPLE 后 --target=aarch64-linux-gnu
+      # 生效（已本地实测 prepare 通过）。
       - name: Configure
         run: |
           set -e
-          # This Makefile sets CC to scripts/gcc-wrapper.py (python2 syntax),
-          # so CC is overridden on the command line to bypass the wrapper.
-          make O=out ARCH=arm64 CC=clang ${{ inputs.defconfig }}
-          make O=out ARCH=arm64 CC=clang olddefconfig
+          # 该 Makefile 把 CC 设为 scripts/gcc-wrapper.py（python2 语法），
+          # 所以命令行覆盖 CC 以绕过 wrapper。
+          make O=out ARCH=arm64 \
+            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
+            ${{ inputs.defconfig }}
+          make O=out ARCH=arm64 \
+            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
+            olddefconfig
           echo "==== key config ===="
           grep -E "^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|HAVE_KPROBES)=" out/.config || true
 
       - name: Build
         run: |
-          make O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+          make O=out ARCH=arm64 \
+            CC=clang CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf STRIP=llvm-strip \
             -j"$(nproc)" Image
           ls -lh out/arch/arm64/boot/Image
