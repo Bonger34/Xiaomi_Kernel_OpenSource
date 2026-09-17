@@ -12,6 +12,22 @@ on:
             V12.1.3.0=-perf-g8a493da
         required: true
         default: "-perf-g0b95fdde9a8c"
+      # 以下三项让 uname -v 与原厂一字不差（mkcompile_h 原样拼接，不经 date 解析）。
+      # 每个固件版本的原厂值都不同，需逐版本填：
+      #   V12.5.11.0: Sat Dec 4 16:14:01 CST 2021 / builder@m1-xm-ota-bd125.bj.idc.xiaomi.com
+      #   V12.1.3.0 : Sat Sep 5 00:36:18 CST 2020 / builder@c4-miui-ota-bd64.bj
+      build_timestamp:
+        description: KBUILD_BUILD_TIMESTAMP（原样拼入 UTS_VERSION）
+        required: true
+        default: "Sat Dec 4 16:14:01 CST 2021"
+      build_user:
+        description: KBUILD_BUILD_USER
+        required: true
+        default: builder
+      build_host:
+        description: KBUILD_BUILD_HOST
+        required: true
+        default: m1-xm-ota-bd125.bj.idc.xiaomi.com
       clang_repo:
         description: clang prebuilt repo
         required: false
@@ -24,6 +40,10 @@ jobs:
     env:
       # 空值可抑制 setlocalversion 追加的 "+" 后缀
       LOCALVERSION: ""
+      # 让 UTS_VERSION / builder 与原厂一致
+      KBUILD_BUILD_TIMESTAMP: ${{ inputs.build_timestamp }}
+      KBUILD_BUILD_USER: ${{ inputs.build_user }}
+      KBUILD_BUILD_HOST: ${{ inputs.build_host }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,6 +106,9 @@ jobs:
           echo "==== 产物内嵌 vermagic ===="
           grep -aoE '4\.19\.[0-9]+[^\x00]{0,25} SMP preempt[^\x00]{0,40}' \
             out/arch/arm64/boot/Image | head -3 || true
+          echo "==== 完整版本串（应与原厂一致）===="
+          grep -aoE 'Linux version 4\.19\.[0-9]+[^\x00]{0,140}' \
+            out/arch/arm64/boot/Image | head -1 || true
 
       - uses: actions/upload-artifact@v4
         with:
