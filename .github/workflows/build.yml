@@ -28,6 +28,14 @@ on:
         description: KBUILD_BUILD_HOST
         required: true
         default: m1-xm-ota-bd125.bj.idc.xiaomi.com
+      cpio_mtime_offset:
+        description: >-
+            initramfs cpio mtime 相对 uname 时间戳的偏移秒数。
+            原厂未设 KBUILD_BUILD_TIMESTAMP，故 cpio 的 time(NULL) 比
+            mkcompile_h 的 date 晚 1~2 秒（逐版本实测不同）。
+            V12.5.11.0 原厂实测 δ = 1。
+        required: false
+        default: "1"
       clang_repo:
         description: clang prebuilt repo
         required: false
@@ -40,6 +48,11 @@ jobs:
     env:
       # 空值可抑制 setlocalversion 追加的 "+" 后缀
       LOCALVERSION: ""
+      # 关键：CI 默认 TZ=UTC，GNU date 会把 "CST" 当成美国中部时间(-06:00)，
+      # 导致 initramfs cpio 的 mtime 差 14 小时（=50400 秒，实测原厂 1638605642
+      # vs 本配方 1638656041）。设为上海时区后 CST=+08:00，与小米构建机一致。
+      # （不影响 KBUILD_BUILD_TIMESTAMP 原样拼入 UTS_VERSION）
+      TZ: Asia/Shanghai
       # 让 UTS_VERSION / builder 与原厂一致
       KBUILD_BUILD_TIMESTAMP: ${{ inputs.build_timestamp }}
       KBUILD_BUILD_USER: ${{ inputs.build_user }}
@@ -79,12 +92,33 @@ jobs:
           grep -n "Jcf" kernel/gen_kheaders.sh
 
       # 修复 ②c：可复现构建——ld.lld 的 --build-id 默认样式含随机成分
-      #          （实测：kheaders 修好后其余字节全同，唯独 build-id 每次不同），
-      #          改为 --build-id=none 以彻底确定化。
-      - name: Disable nondeterministic build-id
+      #          （实测：kheaders 修好后其余字节全同，唯独 build-id 每次不同）。
+      #          改 --build-id=none 虽确定化，但原厂带的是 **20 字节 sha1**，
+      #          build-id 属于验收四字段之一，none 会让该项直接判缺。
+      #          改用 --build-id=sha1：既确定化（基于内容），又与原厂同格式。
+      - name: Deterministic build-id (sha1, match stock)
         run: |
-          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=none|' Makefile
+          sed -i 's|^LDFLAGS_BUILD_ID := .*|LDFLAGS_BUILD_ID := --build-id=sha1|' Makefile
           grep -n "LDFLAGS_BUILD_ID" Makefile
+
+      # 修复 ②d：initramfs cpio 的 mtime 偏移。
+      #          usr/gen_initramfs_list.sh 用 date -d"$KBUILD_BUILD_TIMESTAMP" +%s
+      #          得到与 uname 相同的时间戳，但原厂未设该变量、cpio 走 time(NULL)，
+      #          比 mkcompile_h 的 date 晚 1~2 秒（逐版本实测不同）。加偏移精确匹配。
+      - name: Fix initramfs cpio mtime offset
+        run: |
+          python3 - << 'PYEOF'
+          off = "${{ inputs.cpio_mtime_offset }}"
+          p = 'usr/gen_initramfs_list.sh'
+          s = open(p, encoding='utf-8').read()
+          old = 'timestamp="$(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || :)"'
+          new = ('timestamp="$(($(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || echo 0)'
+                 ' + ' + off + '))"')
+          assert s.count(old) == 1, ('匹配数', s.count(old))
+          open(p, 'w', encoding='utf-8').write(s.replace(old, new))
+          print('  已加偏移 ' + off + ' 秒')
+          PYEOF
+          grep -n "timestamp=" usr/gen_initramfs_list.sh
 
       # 修复 ②：CROSS_COMPILE + GCC_TOOLCHAIN_DIR（否则 clang 按宿主 x86_64 编译，
       #          且 --prefix 会指向 x86 汇编器）
